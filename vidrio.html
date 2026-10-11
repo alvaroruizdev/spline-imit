@@ -420,7 +420,7 @@ const lightSettings = {
   penumbra: 0.6,
   distance: 20,
   rotationSpeed: 0.5,   // rad/s
-  gizmos: false,
+  gizmos: true,
   gobo: "ninguna"       // "ninguna" | "radial" | "gradiente"
 };
 
@@ -431,7 +431,7 @@ function buildLights() {
     const l = lights.pop();
     lightGroup.remove(l);
     if (l.target) scene.remove(l.target);
-    if (l.marker) l.remove(l.marker);
+    if (l.helper) { scene.remove(l.helper); l.helper.dispose(); }
   }
   for (let i = 0; i < lightSettings.count; i++) {
     const l = new THREE.SpotLight(
@@ -448,14 +448,12 @@ function buildLights() {
     scene.add(l.target);
     lightGroup.add(l);
 
-    // marcador para ver la luz (gizmo simple)
-    const mk = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 12, 12),
-      new THREE.MeshBasicMaterial({ color: lightSettings.color })
-    );
-    mk.visible = lightSettings.gizmos;
-    l.add(mk);
-    l.marker = mk;
+    // Gizmo: helper cónico nativo de three.js (SpotLightHelper). El cono
+    // refleja el ángulo de apertura y apunta al target.
+    const helper = new THREE.SpotLightHelper(l, 0x3a3f46);
+    helper.visible = lightSettings.gizmos;
+    scene.add(helper);
+    l.helper = helper;
 
     lights.push(l);
   }
@@ -478,8 +476,8 @@ function applyLightProps() {
     l.distance = lightSettings.distance;
     l.map = lightSettings.gobo === "radial" ? radialTex :
             lightSettings.gobo === "gradiente" ? gradientTex : null;
-    l.marker.visible = lightSettings.gizmos;
-    l.marker.material.color.set(lightSettings.color);
+    l.helper.visible = lightSettings.gizmos;
+    l.helper.update();
   });
 }
 buildLights();
@@ -535,11 +533,11 @@ lightFolder.add(lightSettings, "radius", 1, 10).name("Radio").onChange(placeLigh
 lightFolder.add(lightSettings, "height", 0, 8).name("Altura").onChange(placeLights);
 lightFolder.addColor(lightSettings, "color").onChange(applyLightProps);
 lightFolder.add(lightSettings, "intensity", 0, 40).onChange(applyLightProps);
-lightFolder.add(lightSettings, "angle", 0.1, Math.PI / 2.4).onChange(applyLightProps);
+lightFolder.add(lightSettings, "angle", 0.02, 1.4, 0.01).name("Ángulo (apertura)").onChange(applyLightProps);
 lightFolder.add(lightSettings, "penumbra", 0, 1).onChange(applyLightProps);
 lightFolder.add(lightSettings, "gobo", ["ninguna", "radial", "gradiente"]).onChange(applyLightProps);
 lightFolder.add(lightSettings, "rotationSpeed", 0, 3).name("Rotación (rad/s)");
-lightFolder.add(lightSettings, "gizmos").name("Gizmos").onChange(applyLightProps);
+lightFolder.add(lightSettings, "gizmos").name("Gizmos (helpers)").onChange(applyLightProps);
 lightFolder.open();
 
 const sceneFolder = gui.addFolder("Escena");
@@ -593,6 +591,7 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (model) model.rotation.y += objAnim.speed * dt;
   lightGroup.rotation.y += lightSettings.rotationSpeed * dt;
+  lights.forEach((l) => { if (l.helper) l.helper.update(); });
   controls.update();
   renderer.render(scene, camera);
 }
