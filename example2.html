@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <link rel="icon" href="data:,">
+    <meta charset="utf-8">
+    <title>Editor Avanzado de Materiales y Texturas - Three.js + lil-gui</title>
+    <style>
+      body { margin: 0; overflow: hidden; background-color: #111; font-family: sans-serif; }
+      #canvas { display: block; }
+      
+      #texture-inspector-container {
+        position: fixed;
+        top: 15px;
+        left: 15px;
+        z-index: 10000;
+        background: rgba(0, 0, 0, 0.85);
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        display: none; /* Oculto por defecto hasta que haya textura */
+        flex-direction: column;
+        align-items: center;
+      }
+      #texture-inspector-container span {
+        color: #fff;
+        font-size: 11px;
+        margin-bottom: 6px;
+        font-weight: bold;
+        letter-spacing: 0.5px;
+      }
+      #texture-inspector-container canvas {
+        width: 120px !important;
+        height: 120px !important;
+        border: 2px solid #ffffff;
+        border-radius: 4px;
+        display: block;
+      }
+    </style>
+</head>
+<body>
+
+<div id="texture-inspector-container">
+  <span>INSPECTOR DE TEXTURA</span>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.21.0/dist/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GUI } from 'lil-gui';
+
+// --- 1. Renderizador y Escena -------------------------------------------------
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 5);
+scene.add(camera);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+// --- 2. Generadores de Texturas Procedurales ----------------------------------
+const textureSettings = {
+  radial: {
+    innerRadius: 10,
+    outerRadius: 200,
+    colorCenter: '#ffffff',
+    colorMiddle: '#00eeff',
+    colorOuter: '#da8aff'
+  },
+  gradient: {
+    stop1Color: '#ae00ff',
+    stop2Color: '#0755fe',
+    stop3Color: '#ffffff'
+  }
+};
+
+const radialCanvas = document.createElement('canvas');
+radialCanvas.width = 512;
+radialCanvas.height = 512;
+
+const gradientCanvas = document.createElement('canvas');
+gradientCanvas.width = 16;
+gradientCanvas.height = 256;
+
+function updateRadialCanvas() {
+  const ctx = radialCanvas.getContext('2d');
+  ctx.clearRect(0, 0, 512, 512);
+
+  const grad = ctx.createRadialGradient(256, 256, textureSettings.radial.innerRadius, 256, 256, textureSettings.radial.outerRadius);
+  grad.addColorStop(0.0, textureSettings.radial.colorCenter);
+  grad.addColorStop(0.5, textureSettings.radial.colorMiddle);
+  grad.addColorStop(1.0, textureSettings.radial.colorOuter);
+  
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 512);
+}
+
+function updateGradientCanvas() {
+  const ctx = gradientCanvas.getContext('2d');
+  ctx.clearRect(0, 0, 16, 256);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.0, textureSettings.gradient.stop1Color);
+  grad.addColorStop(0.5, textureSettings.gradient.stop2Color);
+  grad.addColorStop(1.0, textureSettings.gradient.stop3Color);
+  
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 16, 256);
+}
+
+updateRadialCanvas();
+updateGradientCanvas();
+
+const radialTex = new THREE.CanvasTexture(radialCanvas);
+radialTex.colorSpace = THREE.SRGBColorSpace;
+
+const gradientTex = new THREE.CanvasTexture(gradientCanvas);
+gradientTex.colorSpace = THREE.SRGBColorSpace;
+gradientTex.generateMipmaps = false;
+gradientTex.minFilter = THREE.LinearFilter;
+gradientTex.magFilter = THREE.LinearFilter;
+
+// --- 3. Materiales y Configuración Inicial -----------------------------------
+const baseMaterialConfig = { texture: 'ninguna' };
+const material = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  transmission: 0.5,
+  ior: 1.5,
+  roughness: 0.2,
+  metalness: 0.1,
+  specularIntensity: 1.0,
+  specularColor: new THREE.Color(0xffffff)
+});
+
+// Configuración avanzada para iridiscencia (incluyendo grosor por mapa)
+const iridMatConfig = { 
+  texture: 'radial', 
+  useAsThicknessMap: false // Si se activa, la textura actúa como mapa de grosor iridiscente
+};
+
+const iridMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  transmission: 0.2,
+  thickness: 1.0,
+  ior: 1.5,
+  roughness: 0.1,
+  metalness: 0.0,
+  iridescence: 1.0,
+  iridescenceIOR: 1.6,
+  iridescenceThicknessRange: [100, 900],
+  clearcoat: 0.3,
+  clearcoatRoughness: 0.05,
+  envMapIntensity: 2.0,
+  specularIntensity: 1.0,
+  specularColor: new THREE.Color(0xffffff)
+});
+iridMat.map = radialTex; // Asignación inicial por defecto
+
+const chosen = { material: 'iridiscente' };
+
+function applyMaterialTexture(mat, config) {
+  let selectedTex = null;
+  if (config.texture === 'radial') selectedTex = radialTex;
+  if (config.texture === 'gradiente') selectedTex = gradientTex;
+
+  if (mat === iridMat && iridMatConfig.useAsThicknessMap) {
+    mat.iridescenceThicknessMap = selectedTex;
+    mat.map = null; // Desacoplar mapa de color si se usa como grosor
+  } else {
+    mat.map = selectedTex;
+    if (mat === iridMat) mat.iridescenceThicknessMap = null;
+  }
+  
+  mat.needsUpdate = true;
+  updateInspectorView();
+}
+
+// Inspector visual en la esquina superior izquierda (Solo se muestra si hay textura activa)
+const inspectorContainer = document.getElementById('texture-inspector-container');
+let currentInspectedCanvas = null;
+
+function updateInspectorView() {
+  let targetConfig = chosen.material === 'base' ? baseMaterialConfig : iridMatConfig;
+  let targetTexType = targetConfig.texture;
+  
+  if (currentInspectedCanvas) {
+    currentInspectedCanvas.remove();
+    currentInspectedCanvas = null;
+  }
+
+  if (targetTexType === 'radial') {
+    currentInspectedCanvas = radialCanvas.cloneNode(true);
+    const clonedCtx = currentInspectedCanvas.getContext('2d');
+    clonedCtx.drawImage(radialCanvas, 0, 0);
+  } else if (targetTexType === 'gradiente') {
+    currentInspectedCanvas = gradientCanvas.cloneNode(true);
+    const clonedCtx = currentInspectedCanvas.getContext('2d');
+    clonedCtx.drawImage(gradientCanvas, 0, 0);
+  }
+
+  if (currentInspectedCanvas && targetTexType !== 'ninguna') {
+    inspectorContainer.appendChild(currentInspectedCanvas);
+    inspectorContainer.style.display = 'flex';
+  } else {
+    inspectorContainer.style.display = 'none'; // Se oculta por completo si no se usa
+  }
+}
+
+// --- 4. Cargar Modelo 3D ------------------------------------------------------
+const loader = new GLTFLoader();
+let modelMesh;
+loader.load('metaballs.glb', gltf => {
+  modelMesh = gltf.scene;
+  const box = new THREE.Box3().setFromObject(modelMesh);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  modelMesh.position.sub(center);
+  scene.add(modelMesh);
+  
+  applySelectedMaterial();
+}, undefined, err => console.error("Error cargando GLB:", err));
+
+function applySelectedMaterial() {
+  if (!modelMesh) return;
+  const activeMat = chosen.material === 'base' ? material : iridMat;
+  modelMesh.traverse(c => {
+    if (c.isMesh) c.material = activeMat;
+  });
+  updateInspectorView();
+}
+
+// --- 5. Sistema de Luces Globales ---------------------------------------------
+const lights = [];
+const lightGroup = new THREE.Group();
+scene.add(lightGroup);
+
+const lightGlobalSettings = {
+  gizmosVisible: true,
+  count: 4,
+  color: '#ffffff',
+  intensity: 3,
+  angle: Math.PI / 6,
+  distance: 4,
+  textureType: 'gradiente'
+};
+
+const basePositions = [
+  {x: -1, z: 1},
+  {x: 1, z: 1},
+  {x: 1, z: -1},
+  {x: -1, z: -1}
+];
+
+function updateLightPositions() {
+  lights.forEach((l, idx) => {
+    const dir = basePositions[idx % basePositions.length];
+    const len = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+    l.position.set((dir.x / len) * lightGlobalSettings.distance, 3, (dir.z / len) * lightGlobalSettings.distance);
+  });
+}
+
+function updateLightProperties() {
+  lights.forEach(l => {
+    l.color.set(lightGlobalSettings.color);
+    l.intensity = lightGlobalSettings.intensity;
+    l.angle = lightGlobalSettings.angle;
+    if (lightGlobalSettings.textureType === 'gradiente') {
+      l.map = gradientTex;
+    } else if (lightGlobalSettings.textureType === 'radial') {
+      l.map = radialTex;
+    } else {
+      l.map = null;
+    }
+    l.needsUpdate = true;
+  });
+}
+
+function createSpotLight(idx) {
+  const l = new THREE.SpotLight(lightGlobalSettings.color, lightGlobalSettings.intensity, 20, lightGlobalSettings.angle, 0.5, 1);
+  l.map = gradientTex;
+  
+  const dir = basePositions[idx % basePositions.length];
+  const len = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+  l.position.set((dir.x / len) * lightGlobalSettings.distance, 3, (dir.z / len) * lightGlobalSettings.distance);
+  
+  l.target.position.set(0, 0, 0);
+  scene.add(l.target);
+  lightGroup.add(l);
+
+  const helper = new THREE.SpotLightHelper(l, 0xffffff);
+  helper.visible = lightGlobalSettings.gizmosVisible;
+  scene.add(helper);
+  l.helper = helper;
+
+  return l;
+}
+
+function adjustLights(count) {
+  while (lights.length > count) {
+    const l = lights.pop();
+    lightGroup.remove(l);
+    if (l.target) scene.remove(l.target);
+    if (l.helper) {
+      scene.remove(l.helper);
+      l.helper.dispose();
+    }
+  }
+  while (lights.length < count) {
+    lights.push(createSpotLight(lights.length));
+  }
+}
+
+adjustLights(4);
+
+// --- 6. Interfaz GUI ----------------------------------------------------------
+const gui = new GUI();
+
+// A. Iluminación Global
+const lightsMainFolder = gui.addFolder('Iluminación');
+lightsMainFolder.add(lightGlobalSettings, 'gizmosVisible').name('Mostrar Gizmos').onChange(value => {
+  lights.forEach(l => { if (l.helper) l.helper.visible = value; });
+});
+lightsMainFolder.add(lightGlobalSettings, 'count', 1, 8, 1).name('Cantidad de luces').onChange(v => adjustLights(v));
+lightsMainFolder.addColor(lightGlobalSettings, 'color').name('Color Luces').onChange(updateLightProperties);
+lightsMainFolder.add(lightGlobalSettings, 'intensity', 0, 15).name('Intensidad').onChange(updateLightProperties);
+lightsMainFolder.add(lightGlobalSettings, 'angle', 0.1, Math.PI / 3).name('Ángulo Apertura').onChange(updateLightProperties);
+lightsMainFolder.add(lightGlobalSettings, 'distance', 1, 10).name('Distancia al Centro').onChange(updateLightPositions);
+lightsMainFolder.add(lightGlobalSettings, 'textureType', ['ninguna', 'radial', 'gradiente']).name('Textura Emisión').onChange(updateLightProperties);
+lightsMainFolder.open();
+
+// B. Texturas
+const texFolder = gui.addFolder('Texturas');
+
+const radFolder = texFolder.addFolder('Radial');
+radFolder.add(textureSettings.radial, 'innerRadius', 0, 200).onChange(() => { updateRadialCanvas(); radialTex.needsUpdate = true; updateInspectorView(); });
+radFolder.add(textureSettings.radial, 'outerRadius', 50, 400).onChange(() => { updateRadialCanvas(); radialTex.needsUpdate = true; updateInspectorView(); });
+radFolder.addColor(textureSettings.radial, 'colorCenter').onChange(() => { updateRadialCanvas(); radialTex.needsUpdate = true; updateInspectorView(); });
+radFolder.addColor(textureSettings.radial, 'colorMiddle').onChange(() => { updateRadialCanvas(); radialTex.needsUpdate = true; updateInspectorView(); });
+radFolder.addColor(textureSettings.radial, 'colorOuter').onChange(() => { updateRadialCanvas(); radialTex.needsUpdate = true; updateInspectorView(); });
+radFolder.close();
+
+const gradFolder = texFolder.addFolder('Gradiente');
+gradFolder.addColor(textureSettings.gradient, 'stop1Color').onChange(() => { updateGradientCanvas(); gradientTex.needsUpdate = true; updateInspectorView(); });
+gradFolder.addColor(textureSettings.gradient, 'stop2Color').onChange(() => { updateGradientCanvas(); gradientTex.needsUpdate = true; updateInspectorView(); });
+gradFolder.addColor(textureSettings.gradient, 'stop3Color').onChange(() => { updateGradientCanvas(); gradientTex.needsUpdate = true; updateInspectorView(); });
+gradFolder.close();
+texFolder.close();
+
+// C. Materiales
+const matChoiceFolder = gui.addFolder('MATERIAL ELEGIDO');
+matChoiceFolder.add(chosen, 'material', ['base', 'iridiscente']).onChange(() => applySelectedMaterial());
+matChoiceFolder.open();
+
+const matFolder = gui.addFolder('Base Material');
+matFolder.addColor(material, 'color');
+matFolder.add(baseMaterialConfig, 'texture', ['ninguna', 'radial', 'gradiente']).name('Textura').onChange(() => {
+  applyMaterialTexture(material, baseMaterialConfig);
+});
+matFolder.add(material, 'transmission', 0, 1);
+matFolder.add(material, 'ior', 1, 3);
+matFolder.add(material, 'roughness', 0, 1);
+matFolder.add(material, 'metalness', 0, 1);
+matFolder.add(material, 'specularIntensity', 0, 1);
+matFolder.addColor(material, 'specularColor');
+matFolder.close();
+
+const iridFolder = gui.addFolder('Iridiscente Mat');
+iridFolder.addColor(iridMat, 'color');
+iridFolder.add(iridMatConfig, 'texture', ['ninguna', 'radial', 'gradiente']).name('Textura').onChange(() => {
+  applyMaterialTexture(iridMat, iridMatConfig);
+});
+iridFolder.add(iridMatConfig, 'useAsThicknessMap', false).name('Usar como Mapa Grosor').onChange(() => {
+  applyMaterialTexture(iridMat, iridMatConfig);
+});
+iridFolder.add(iridMat, 'iridescence', 0, 1).name('Iridiscencia');
+iridFolder.add(iridMat, 'iridescenceIOR', 1, 3).name('Iridiscent IOR');
+
+// Rangos de grosor para la iridiscencia (crean los colores del arco iris)
+const thicknessControl = {
+  min: 100,
+  max: 900
+};
+iridFolder.add(thicknessControl, 'min', 0, 1000).name('Grosor Min (nm)').onChange(v => {
+  iridMat.iridescenceThicknessRange = [v, thicknessControl.max];
+  iridMat.needsUpdate = true;
+});
+iridFolder.add(thicknessControl, 'max', 100, 2000).name('Grosor Max (nm)').onChange(v => {
+  iridMat.iridescenceThicknessRange = [thicknessControl.min, v];
+  iridMat.needsUpdate = true;
+});
+
+iridFolder.add(iridMat, 'transmission', 0, 1);
+iridFolder.add(iridMat, 'thickness', 0, 5).name('Volumen Thickness');
+iridFolder.add(iridMat, 'roughness', 0, 1);
+iridFolder.add(iridMat, 'metalness', 0, 1);
+iridFolder.add(iridMat, 'clearcoat', 0, 1).name('Clearcoat (Barniz)');
+iridFolder.add(iridMat, 'clearcoatRoughness', 0, 1).name('Clearcoat Roughness');
+iridFolder.add(iridMat, 'envMapIntensity', 0, 5).name('EnvMap Intensity');
+iridFolder.add(iridMat, 'specularIntensity', 0, 1);
+iridFolder.addColor(iridMat, 'specularColor');
+iridFolder.open();
+
+updateInspectorView();
+
+// --- 7. Bucle de Animación ----------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  if (modelMesh) modelMesh.rotation.y += 0.005;
+  
+  lights.forEach(l => { 
+    if (l.helper && typeof l.helper.update === 'function') {
+      l.helper.update(); 
+    }
+  });
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// --- 8. Redimensionar ventana -------------------------------------------------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+});
+</script>
+</body>
+</html>
