@@ -87,6 +87,37 @@ function buildStudioEnv() {
 }
 const studioEnv = pmrem.fromScene(buildStudioEnv(), 0.05).texture;
 
+// Entorno de estudio con softboxes REDONDOS y muy brillantes → reflejos
+// CIRCULARES e intensos sobre la superficie (como la referencia).
+function buildRoundStudioEnv() {
+  const s = new THREE.Scene();
+  s.background = new THREE.Color(0x565c64);   // estudio gris medio (da contraste)
+  const disc = (color, intensity, r, x, y, z) => {
+    const m = new THREE.Mesh(
+      new THREE.CircleGeometry(r, 64),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide })
+    );
+    m.position.set(x, y, z);
+    m.lookAt(0, 0, 0);
+    s.add(m);
+  };
+  // Softbox frontal-superior (reflejo blanco redondo)
+  disc(0xffffff, 26, 2.8, 0, 4, 13);
+  // Rellenos redondos
+  disc(0xffffff, 14, 3.0, -8, 2, 6);
+  disc(0xffffff, 12, 2.6, 9, 1, 4);
+  disc(0xffffff, 12, 2.6, 0, 8, -2);
+  // Rims de color (enriquecen los bordes)
+  disc(0xd8e0ff, 16, 2.0, -6, -4, -7);
+  disc(0xffe4cc, 16, 2.0, 6, -4, -7);
+  // Glints PEQUEÑOS y muy brillantes → highlights nítidos y redondos
+  disc(0xffffff, 300, 0.55, -3, 5, 9);
+  disc(0xffffff, 240, 0.5, 5, 3, 8);
+  disc(0xffffff, 200, 0.45, -1, -5, 9);
+  return s;
+}
+const roundStudioEnv = pmrem.fromScene(buildRoundStudioEnv(), 0.0).texture;
+
 // Entorno HDRI real (el mismo que usa el ejemplo de iridiscencia de three.js).
 // Es el que mejor hace visible la iridiscencia.
 let hdrEnv = null;
@@ -134,9 +165,10 @@ function makeGradientEnvTexture() {
 const _grad = makeGradientEnvTexture();
 const gradientEnv = pmrem.fromEquirectangular(_grad.tex).texture;
 
-const envConfig = { mode: "hdr" };   // "hdr" | "estudio_color" | "gradiente" | "estudio"
+const envConfig = { mode: "estudio_redondo" };   // "estudio_redondo" | "hdr" | "estudio_color" | "gradiente" | "estudio"
 function applyEnv() {
   scene.environment =
+    envConfig.mode === "estudio_redondo" ? roundStudioEnv :
     envConfig.mode === "hdr" ? (hdrEnv || studioEnv) :
     envConfig.mode === "gradiente" ? gradientEnv :
     envConfig.mode === "estudio" ? roomEnv : studioEnv;
@@ -252,12 +284,12 @@ const matConfig = {
 /* ------------------------------------------------------------------ */
 const mat = new THREE.MeshPhysicalMaterial({
   color: 0xffffff,
-  transmission: 0.9,
+  transmission: 0.3,
   thickness: 1.5,
   attenuationColor: 0xffffff,
   attenuationDistance: Infinity,
   ior: 1.5,
-  roughness: 0.05,
+  roughness: 0.02,
   metalness: 0.0,
   specularIntensity: 1.0,
   specularColor: 0xffffff,
@@ -266,7 +298,7 @@ const mat = new THREE.MeshPhysicalMaterial({
   iridescenceThicknessRange: [100, 400],
   clearcoat: 0.0,
   clearcoatRoughness: 0.06,
-  envMapIntensity: 1.2,
+  envMapIntensity: 1.3,
   bumpMap: bumpTex,
   bumpScale: 0.35
 });
@@ -286,24 +318,36 @@ function setIridRange() {
 
 // Refuerzo iridiscente tipo fresnel (imita las capas "fresnel" de Spline):
 // tiñe los bordes (ángulo rasante) con un arcoíris suave según la vista.
-const iridBoost = { enabled: true, intensity: 1.2 };
+const iridBoost = { enabled: true, intensity: 1.0 };
 mat.onBeforeCompile = (shader) => {
   mat.userData.shader = shader;
   shader.uniforms.uIridBoost = { value: iridBoost.enabled ? iridBoost.intensity : 0.0 };
   shader.fragmentShader = shader.fragmentShader
     .replace(
       "#include <common>",
-      "#include <common>\nuniform float uIridBoost;"
+      `#include <common>
+uniform float uIridBoost;
+vec3 hsv2rgb( vec3 c ) {
+  vec4 K = vec4( 1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0 );
+  vec3 p = abs( fract( c.xxx + K.xyz ) * 6.0 - K.www );
+  return c.z * mix( K.xxx, clamp( p - K.xxx, 0.0, 1.0 ), c.y );
+}`
     )
     .replace(
       "#include <opaque_fragment>",
       `
-      // fresnel iridescent rim (boost)
+      // Bandas iridiscentes tipo fresnel saturadas (imita las capas fresnel de
+      // Spline). Se MEZCLA el color sobre el blanco para que no se lave, con
+      // variación orgánica para que no sean círculos perfectos.
       {
         vec3 viewDir = normalize( vViewPosition );
-        float fres = pow( 1.0 - abs( dot( normal, viewDir ) ), 1.4 );
-        vec3 iridCol = 0.5 + 0.5 * cos( 6.28318 * ( fres * 1.4 + vec3( 0.0, 0.33, 0.67 ) ) );
-        outgoingLight += iridCol * fres * uIridBoost;
+        float fres = 1.0 - abs( dot( normal, viewDir ) );
+        float swirl = 0.5 + 0.5 * sin( 3.0 * normal.x + 3.0 * normal.y + 2.0 * normal.z );
+        float t = fres * 1.1 + swirl * 0.85;
+        vec3 iridCol = hsv2rgb( vec3( fract( 0.55 + t * 1.2 ), 0.85, 1.0 ) );
+        float band = smoothstep( 0.05, 0.8, fres );
+        float amt = clamp( ( 0.12 + 1.1 * band ) * uIridBoost, 0.0, 0.95 );
+        outgoingLight = mix( outgoingLight, iridCol, amt );
       }
       #include <opaque_fragment>`
     );
@@ -371,7 +415,7 @@ const lightSettings = {
   radius: 4,
   height: 3.2,
   color: "#ffffff",
-  intensity: 6,
+  intensity: 18,
   angle: Math.PI / 6,
   penumbra: 0.6,
   distance: 20,
@@ -499,7 +543,7 @@ lightFolder.add(lightSettings, "gizmos").name("Gizmos").onChange(applyLightProps
 lightFolder.open();
 
 const sceneFolder = gui.addFolder("Escena");
-sceneFolder.add(envConfig, "mode", ["hdr", "estudio_color", "gradiente", "estudio"]).name("Entorno").onChange(applyEnv);
+sceneFolder.add(envConfig, "mode", ["estudio_redondo", "hdr", "estudio_color", "gradiente", "estudio"]).name("Entorno").onChange(applyEnv);
 sceneFolder.addColor(BG, "color").onChange((v) => scene.background.set(v));
 sceneFolder.add(objAnim, "speed", 0, 2).name("Giro objeto (rad/s)");
 sceneFolder.add(controls, "autoRotate").name("AutoRotate cámara");
@@ -537,7 +581,7 @@ if (Q.get("height") !== null) { lightSettings.height = qnum("height"); placeLigh
 if (Q.get("radius") !== null) { lightSettings.radius = qnum("radius"); placeLights(); }
 if (Q.get("speed") !== null) objAnim.speed = qnum("speed");
 
-window.__dbg = { scene, mat, renderer, camera, controls, lights, lightGroup, gradientEnv, roomEnv, studioEnv, gradCanvas: _grad.canvas, envConfig, pmrem, model: null };
+window.__dbg = { scene, mat, renderer, camera, controls, lights, lightGroup, gradientEnv, roomEnv, studioEnv, roundStudioEnv, gradCanvas: _grad.canvas, envConfig, pmrem, model: null };
 Object.defineProperty(window.__dbg, "model", { get: () => model });
 
 /* ------------------------------------------------------------------ */

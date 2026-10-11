@@ -28,3 +28,12 @@ Use when the target is a scene living inside a WebGL canvas page (Spline `my.spl
 ## Decoding more of the stream (only if step 3 is not enough)
 
 The byte array is a custom MessagePack-like stream: `0xd4 0x72 <id>` opens a numbered table entry, and the value that follows uses the usual msgpack tags (`0x9x` array, `0xax` string, `0xcb` float64, `0xc2`/`0xc3` booleans) with extra extension opcodes (`0xc7`-`0xc9`, `0xd4`-`0xd8`). String extraction from step 3 answers most questions; reach for full decoding only for exact numeric values.
+
+## Recreating in three.js
+
+When the task is to rebuild the scene in three.js (glass/iridescent materials are the usual ask):
+
+1. Generate UVs before using `bumpMap` or `iridescenceThicknessMap` on meshes that lack them. Exported GLBs often carry only POSITION and NORMAL, and a texture sampled with missing UVs changes nothing silently. In the GLTF load callback, when `geometry.getAttribute('uv')` is absent, compute spherical UVs from POSITION — `u = 0.5 + atan2(z, x) / (2π)`, `v = 0.5 - asin(y / r) / π` — then `setAttribute('uv', ...)`.
+2. Do not rely on three.js `iridescence` alone for a Spline iridescent-glass look; it is far too subtle on smooth geometry because Spline fakes the effect with fresnel layers and a matcap. Add a fresnel rim boost through `material.onBeforeCompile`: declare `uniform float uIridBoost;` by replacing `#include <common>`, then replace `#include <opaque_fragment>` to add `outgoingLight += rainbow * pow(1.0 - abs(dot(normal, normalize(vViewPosition))), 1.4) * uIridBoost;` before it, where `rainbow` is a cosine palette. Store `material.userData.shader = shader` inside the callback so the uniform can be changed at runtime.
+3. Light glass with a real HDRI (three.js's `venice_sunset_1k.hdr` via `RGBELoader` + `pmrem.fromEquirectangular`) under ACES tone mapping. ACESFilmicToneMapping washes bright pastel LDR canvas env maps to white, and LDR gradients read as colorless on glass.
+4. Keep `transmission` near 0.9 for a transparent interior and let the rim boost carry the edge color; raising `transmission` toward 1.0 suppresses the reflection that carries the iridescence.
