@@ -7,9 +7,18 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #ececec; }
   #canvas { display: block; }
+  /* VIEWER-CSS-START */
+  #tex-viewer { position: fixed; top: 12px; left: 12px; z-index: 10; display: flex; gap: 8px; flex-wrap: wrap; max-width: 380px; }
+  .tex-slot { background: rgba(20,22,26,0.62); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .tex-slot canvas { width: 72px; height: 72px; display: block; border-radius: 4px; border: 1px solid rgba(255,255,255,0.28); }
+  .tex-slot span { color: #fff; font: 10px/1.2 system-ui, sans-serif; letter-spacing: .3px; }
+  /* VIEWER-CSS-END */
 </style>
 </head>
 <body>
+<!-- VIEWER-START -->
+<div id="tex-viewer"></div>
+<!-- VIEWER-END -->
 <canvas id="canvas"></canvas>
 
 <script type="importmap">
@@ -271,7 +280,37 @@ function makeBumpCanvas() {
   ctx.drawImage(small, 0, 0, big, big);
   return c;
 }
-const bumpTex = makeTex(makeBumpCanvas(), false);
+const bumpCanvas = makeBumpCanvas();
+const bumpTex = makeTex(bumpCanvas, false);
+
+/* === VIEWER-JS-START === */
+// Visor de texturas (arriba-izquierda): previsualiza las texturas procedurales.
+const viewerEl = document.getElementById("tex-viewer");
+function viewerPreview(label, canvasObj) {
+  const slot = document.createElement("div");
+  slot.className = "tex-slot";
+  const c = document.createElement("canvas");
+  c.width = 144; c.height = 144;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(canvasObj, 0, 0, 144, 144);
+  const sp = document.createElement("span");
+  sp.textContent = label;
+  slot.appendChild(c);
+  slot.appendChild(sp);
+  viewerEl.appendChild(slot);
+}
+function refreshViewer() {
+  if (!viewerEl) return;
+  viewerEl.innerHTML = "";
+  viewerPreview("radial", radialCanvas);
+  viewerPreview("gradiente", gradientCanvas);
+  viewerPreview("anillos", grayCanvas);
+  viewerPreview("bump", bumpCanvas);
+}
+refreshViewer();
+setInterval(refreshViewer, 500);   // se actualiza al editar texturas en la GUI
+/* === VIEWER-JS-END === */
 const matConfig = {
   thicknessMap: "ninguna",
   bumpScale: 0.35,
@@ -425,6 +464,7 @@ const lightSettings = {
 };
 
 const lights = [];
+const USE_HELPERS = true;   // el exportador lo pone a false (sin gizmos)
 function buildLights() {
   // limpiar
   while (lights.length) {
@@ -450,10 +490,12 @@ function buildLights() {
 
     // Gizmo: helper cónico nativo de three.js (SpotLightHelper). El cono
     // refleja el ángulo de apertura y apunta al target.
-    const helper = new THREE.SpotLightHelper(l, 0x3a3f46);
-    helper.visible = lightSettings.gizmos;
-    scene.add(helper);
-    l.helper = helper;
+    if (USE_HELPERS) {
+      const helper = new THREE.SpotLightHelper(l, 0x3a3f46);
+      helper.visible = lightSettings.gizmos;
+      scene.add(helper);
+      l.helper = helper;
+    }
 
     lights.push(l);
   }
@@ -476,12 +518,15 @@ function applyLightProps() {
     l.distance = lightSettings.distance;
     l.map = lightSettings.gobo === "radial" ? radialTex :
             lightSettings.gobo === "gradiente" ? gradientTex : null;
-    l.helper.visible = lightSettings.gizmos;
-    l.helper.update();
+    if (l.helper) {
+      l.helper.visible = lightSettings.gizmos;
+      l.helper.update();
+    }
   });
 }
 buildLights();
 
+/* === GUI-JS-START === */
 /* ------------------------------------------------------------------ */
 /* 7. GUI (se omite con ?gui=0 para capturas limpias)                  */
 /* ------------------------------------------------------------------ */
@@ -547,6 +592,34 @@ sceneFolder.add(objAnim, "speed", 0, 2).name("Giro objeto (rad/s)");
 sceneFolder.add(controls, "autoRotate").name("AutoRotate cámara");
 sceneFolder.add(controls, "autoRotateSpeed", 0, 5).name("Vel. autoRotate");
 sceneFolder.open();
+
+// --- Exportar un HTML limpio (sin GUI, sin visor, sin gizmos) ---
+async function exportCleanHTML() {
+  try {
+    const src = await (await fetch(location.pathname, { cache: "no-store" })).text();
+    const out = src
+      .replace(/\n\s*import \{ GUI \} from "lil-gui";/, "")
+      .replace(/,(\s*)"lil-gui":\s*"\.\/vendor\/lil-gui\.esm\.min\.js"/, "")
+      .replace(/\/\* VIEWER-CSS-START \*\/[\s\S]*?\/\* VIEWER-CSS-END \*\//, "")
+      .replace(/<!-- VIEWER-START -->[\s\S]*?<!-- VIEWER-END -->/, "")
+      .replace(/\/\* === VIEWER-JS-START === \*\/[\s\S]*?\/\* === VIEWER-JS-END === \*\//, "")
+      .replace(/\/\* === GUI-JS-START === \*\/[\s\S]*?\/\* === GUI-JS-END === \*\//, "")
+      .replace(/const USE_HELPERS = true;/, "const USE_HELPERS = false;");
+    const blob = new Blob([out], { type: "text/html" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "vidrio-export.html";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    console.info("Exportado vidrio-export.html (colocalo junto a vendor/)");
+  } catch (e) {
+    alert("No se pudo exportar: " + e.message + " (sirve la carpeta con serve.py)");
+  }
+}
+gui.add({ exportar: exportCleanHTML }, "exportar").name("⬇ Exportar HTML limpio");
+/* === GUI-JS-END === */
 
 /* ------------------------------------------------------------------ */
 /* 8. Overrides por URL + handle de depuración (para iterar rápido)    */
