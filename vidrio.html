@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vidrio iridiscente — réplica Spline</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #ececec; }
+  #canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/",
+    "lil-gui": "./vendor/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { GUI } from "lil-gui";
+
+/* ------------------------------------------------------------------ */
+/* 1. Renderer, escena, cámara                                         */
+/* ------------------------------------------------------------------ */
+const canvas = document.getElementById("canvas");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+
+const scene = new THREE.Scene();
+const BG = { color: "#ececec" };
+scene.background = new THREE.Color(BG.color);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0.6, 6.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0, 0.6, 0);
+
+/* ------------------------------------------------------------------ */
+/* 2. Entorno (PMREM) — imprescindible para transmisión/iridiscencia   */
+/* ------------------------------------------------------------------ */
+const pmrem = new THREE.PMREMGenerator(renderer);
+
+// Entorno de estudio (neutro/blanco) de three.js
+const roomEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// Entorno "estudio HDR" propio: caja oscura + softboxes emisivos de color.
+// El contraste (luces brillantes sobre fondo oscuro) hace que la iridiscencia
+// y los reflejos se vean, como en la referencia.
+function buildStudioEnv() {
+  const s = new THREE.Scene();
+  const room = new THREE.Mesh(
+    new THREE.BoxGeometry(24, 24, 24),
+    new THREE.MeshBasicMaterial({ color: 0x14161a, side: THREE.BackSide })
+  );
+  s.add(room);
+  const panel = (color, intensity, x, y, z) => {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(9, 9),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide })
+    );
+    m.position.set(x, y, z);
+    m.lookAt(0, 0, 0);
+    s.add(m);
+  };
+  panel(0xffffff, 5, 0, 10, 0);     // luz principal superior (techo, suave)
+  panel(0x5b9dff, 7, -8, 2, 3);     // azul izquierda
+  panel(0xb06bff, 7, 8, 2, -3);     // violeta derecha
+  panel(0xffb86b, 6, 0, -2, 8);     // naranja frente
+  panel(0x4dd8c8, 6, 0, 3, -9);     // teal detrás
+  return s;
+}
+const studioEnv = pmrem.fromScene(buildStudioEnv(), 0.05).texture;
+
+// Entorno HDRI real (el mismo que usa el ejemplo de iridiscencia de three.js).
+// Es el que mejor hace visible la iridiscencia.
+let hdrEnv = null;
+const rgbeLoader = new RGBELoader();
+rgbeLoader.load("vendor/assets/venice_sunset_1k.hdr", (tex) => {
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  hdrEnv = pmrem.fromEquirectangular(tex).texture;
+  if (envConfig.mode === "hdr") scene.environment = hdrEnv;
+}, undefined, (e) => console.error("HDR:", e));
+
+// Entorno "gradiente cielo" procedural: da reflejos de color para que la
+// iridiscencia muestre cian/violeta/dorado como en la referencia.
+function makeGradientEnvTexture() {
+  const w = 512, h = 256;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0.0, "#2e6bff");   // azul
+  g.addColorStop(0.20, "#39c9ff");  // cian
+  g.addColorStop(0.40, "#b9e9ff");  // celeste claro
+  g.addColorStop(0.58, "#d9b8ff");  // lavanda
+  g.addColorStop(0.74, "#ffaecb");  // rosa
+  g.addColorStop(0.88, "#ffb877");  // naranja
+  g.addColorStop(1.0, "#ffd56e");   // dorado
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  // highlights suaves (para reflejos especulares)
+  const spots = [
+    [0.5, 0.18, 70, "rgba(255,255,255,0.9)"],
+    [0.32, 0.8, 50, "rgba(255,255,255,0.55)"]
+  ];
+  for (const [fx, fy, r, col] of spots) {
+    const rg = ctx.createRadialGradient(fx * w, fy * h, 0, fx * w, fy * h, r);
+    rg.addColorStop(0, col);
+    rg.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, w, h);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return { tex, canvas: c };
+}
+const _grad = makeGradientEnvTexture();
+const gradientEnv = pmrem.fromEquirectangular(_grad.tex).texture;
+
+const envConfig = { mode: "hdr" };   // "hdr" | "estudio_color" | "gradiente" | "estudio"
+function applyEnv() {
+  scene.environment =
+    envConfig.mode === "hdr" ? (hdrEnv || studioEnv) :
+    envConfig.mode === "gradiente" ? gradientEnv :
+    envConfig.mode === "estudio" ? roomEnv : studioEnv;
+}
+applyEnv();
+scene.environmentIntensity = 1.0; // (r163+; se aplica si la versión lo soporta)
+
+/* ------------------------------------------------------------------ */
+/* 3. Texturas procedurales                                            */
+/* ------------------------------------------------------------------ */
+const texSettings = {
+  radial:   { inner: 0,   outer: 220, cCenter: "#ffffff", cMid: "#00eeff", cOuter: "#da8aff", grayscale: false },
+  gradient: { s1: "#ae00ff", s2: "#0755fe", s3: "#ffffff", grayscale: false },
+  gray:     { inner: 40,  outer: 250, band: 3 }   // radial en escala de grises (mapa de grosor)
+};
+
+const radialCanvas = document.createElement("canvas"); radialCanvas.width = radialCanvas.height = 512;
+const gradientCanvas = document.createElement("canvas"); gradientCanvas.width = 16; gradientCanvas.height = 256;
+const grayCanvas = document.createElement("canvas"); grayCanvas.width = grayCanvas.height = 512;
+
+function paintRadial(c, cfg) {
+  const ctx = c.getContext("2d");
+  const cx = c.width / 2, cy = c.height / 2;
+  const g = ctx.createRadialGradient(cx, cy, cfg.inner, cx, cy, cfg.outer);
+  if (cfg.grayscale) {
+    g.addColorStop(0.0, "#ffffff");
+    g.addColorStop(0.5, "#888888");
+    g.addColorStop(1.0, "#000000");
+  } else {
+    g.addColorStop(0.0, cfg.cCenter);
+    g.addColorStop(0.5, cfg.cMid);
+    g.addColorStop(1.0, cfg.cOuter);
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, c.width, c.height);
+}
+
+function paintGradient(c, cfg) {
+  const ctx = c.getContext("2d");
+  const g = ctx.createLinearGradient(0, 0, 0, c.height);
+  g.addColorStop(0.0, cfg.s1);
+  g.addColorStop(0.5, cfg.s2);
+  g.addColorStop(1.0, cfg.s3);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, c.width, c.height);
+}
+
+// Mapa de grosor iridiscente: anillos concéntricos grises (crea bandas arcoíris)
+function paintGrayBands(c, cfg) {
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, c.width, c.height);
+  const cx = c.width / 2, cy = c.height / 2;
+  const maxR = Math.min(cx, cy) * 0.95;
+  const steps = Math.max(2, cfg.band);
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    const r = maxR * t;
+    const v = 255 - Math.floor(255 * t);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgb(${v},${v},${v})`;
+    ctx.lineWidth = maxR / steps * 2;
+    ctx.stroke();
+  }
+}
+
+paintRadial(radialCanvas, texSettings.radial);
+paintGradient(gradientCanvas, texSettings.gradient);
+paintGrayBands(grayCanvas, texSettings.gray);
+
+function makeTex(c, srgb = true) {
+  const t = new THREE.CanvasTexture(c);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+const radialTex   = makeTex(radialCanvas);
+const gradientTex = makeTex(gradientCanvas);
+const grayTex     = makeTex(grayCanvas, false);
+
+// Mapa de bump de ruido suave (para variar la normal y que la iridiscencia
+// muestre parches orgánicos de color, como la referencia).
+function makeBumpCanvas() {
+  const s = 64, big = 256;
+  const small = document.createElement("canvas"); small.width = small.height = s;
+  const sc = small.getContext("2d");
+  const id = sc.createImageData(s, s);
+  for (let i = 0; i < s * s; i++) {
+    const v = Math.floor(Math.random() * 255);
+    id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v;
+    id.data[i * 4 + 3] = 255;
+  }
+  sc.putImageData(id, 0, 0);
+  const c = document.createElement("canvas"); c.width = c.height = big;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(small, 0, 0, big, big);
+  return c;
+}
+const bumpTex = makeTex(makeBumpCanvas(), false);
+const matConfig = {
+  thicknessMap: "ninguna",
+  bumpScale: 0.35,
+  iridMin: 100,
+  iridMax: 400
+};
+
+/* ------------------------------------------------------------------ */
+/* 4. Material                                                         */
+/* ------------------------------------------------------------------ */
+const mat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  transmission: 0.9,
+  thickness: 1.5,
+  attenuationColor: 0xffffff,
+  attenuationDistance: Infinity,
+  ior: 1.5,
+  roughness: 0.05,
+  metalness: 0.0,
+  specularIntensity: 1.0,
+  specularColor: 0xffffff,
+  iridescence: 1.0,
+  iridescenceIOR: 1.3,
+  iridescenceThicknessRange: [100, 400],
+  clearcoat: 0.0,
+  clearcoatRoughness: 0.06,
+  envMapIntensity: 1.2,
+  bumpMap: bumpTex,
+  bumpScale: 0.35
+});
+
+function applyThicknessMap() {
+  mat.iridescenceThicknessMap =
+    matConfig.thicknessMap === "radial"    ? radialTex   :
+    matConfig.thicknessMap === "gradiente" ? gradientTex :
+    matConfig.thicknessMap === "anillos"   ? grayTex     : null;
+  mat.needsUpdate = true;
+}
+
+function setIridRange() {
+  mat.iridescenceThicknessRange = [matConfig.iridMin, matConfig.iridMax];
+  mat.needsUpdate = true;
+}
+
+// Refuerzo iridiscente tipo fresnel (imita las capas "fresnel" de Spline):
+// tiñe los bordes (ángulo rasante) con un arcoíris suave según la vista.
+const iridBoost = { enabled: true, intensity: 1.2 };
+mat.onBeforeCompile = (shader) => {
+  mat.userData.shader = shader;
+  shader.uniforms.uIridBoost = { value: iridBoost.enabled ? iridBoost.intensity : 0.0 };
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      "#include <common>",
+      "#include <common>\nuniform float uIridBoost;"
+    )
+    .replace(
+      "#include <opaque_fragment>",
+      `
+      // fresnel iridescent rim (boost)
+      {
+        vec3 viewDir = normalize( vViewPosition );
+        float fres = pow( 1.0 - abs( dot( normal, viewDir ) ), 1.4 );
+        vec3 iridCol = 0.5 + 0.5 * cos( 6.28318 * ( fres * 1.4 + vec3( 0.0, 0.33, 0.67 ) ) );
+        outgoingLight += iridCol * fres * uIridBoost;
+      }
+      #include <opaque_fragment>`
+    );
+};
+function applyIridBoost() {
+  if (mat.userData.shader) mat.userData.shader.uniforms.uIridBoost.value = iridBoost.enabled ? iridBoost.intensity : 0.0;
+  mat.needsUpdate = true;
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Modelo                                                           */
+/* ------------------------------------------------------------------ */
+const loader = new GLTFLoader();
+let model;
+const objAnim = { speed: 0.35 };   // rad/s
+
+loader.load("metaballs.glb", (gltf) => {
+  model = gltf.scene;
+  const box = new THREE.Box3().setFromObject(model);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  model.position.sub(center);
+  // Escalar para que la altura ocupe ~4.2 unidades (encuadre tipo referencia)
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const targetH = 4.2;
+  const s = targetH / Math.max(size.y, 0.0001);
+  model.scale.setScalar(s);
+  const targetY = 0.2;
+  controls.target.set(0, targetY, 0);
+  camera.position.set(0, targetY, 6.5);
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    // El GLB no trae UVs: generamos UVs esféricos para poder usar
+    // bumpMap / iridescenceThicknessMap.
+    const geo = o.geometry;
+    if (!geo.getAttribute("uv")) {
+      geo.computeBoundingSphere();
+      const c = geo.boundingSphere.center;
+      const pos = geo.attributes.position;
+      const uv = new Float32Array(pos.count * 2);
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i) - c.x;
+        const y = pos.getY(i) - c.y;
+        const z = pos.getZ(i) - c.z;
+        const r = Math.sqrt(x * x + y * y + z * z) || 1;
+        uv[i * 2] = 0.5 + Math.atan2(z, x) / (Math.PI * 2);
+        uv[i * 2 + 1] = 0.5 - Math.asin(y / r) / Math.PI;
+      }
+      geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    }
+    o.material = mat;
+  });
+  scene.add(model);
+}, undefined, (e) => console.error("GLB:", e));
+
+/* ------------------------------------------------------------------ */
+/* 6. Luces (spotlights orbitando con gobo opcional)                   */
+/* ------------------------------------------------------------------ */
+const lightGroup = new THREE.Group();
+scene.add(lightGroup);
+
+const lightSettings = {
+  count: 4,
+  radius: 4,
+  height: 3.2,
+  color: "#ffffff",
+  intensity: 6,
+  angle: Math.PI / 6,
+  penumbra: 0.6,
+  distance: 20,
+  rotationSpeed: 0.5,   // rad/s
+  gizmos: false,
+  gobo: "ninguna"       // "ninguna" | "radial" | "gradiente"
+};
+
+const lights = [];
+function buildLights() {
+  // limpiar
+  while (lights.length) {
+    const l = lights.pop();
+    lightGroup.remove(l);
+    if (l.target) scene.remove(l.target);
+    if (l.marker) l.remove(l.marker);
+  }
+  for (let i = 0; i < lightSettings.count; i++) {
+    const l = new THREE.SpotLight(
+      lightSettings.color,
+      lightSettings.intensity,
+      lightSettings.distance,
+      lightSettings.angle,
+      lightSettings.penumbra,
+      1
+    );
+    const ang = (i / lightSettings.count) * Math.PI * 2;
+    l.position.set(Math.cos(ang) * lightSettings.radius, lightSettings.height, Math.sin(ang) * lightSettings.radius);
+    l.target.position.set(0, 0.6, 0);
+    scene.add(l.target);
+    lightGroup.add(l);
+
+    // marcador para ver la luz (gizmo simple)
+    const mk = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 12, 12),
+      new THREE.MeshBasicMaterial({ color: lightSettings.color })
+    );
+    mk.visible = lightSettings.gizmos;
+    l.add(mk);
+    l.marker = mk;
+
+    lights.push(l);
+  }
+  applyLightProps();
+}
+
+function placeLights() {
+  lights.forEach((l, i) => {
+    const ang = (i / lights.length) * Math.PI * 2;
+    l.position.set(Math.cos(ang) * lightSettings.radius, lightSettings.height, Math.sin(ang) * lightSettings.radius);
+  });
+}
+
+function applyLightProps() {
+  lights.forEach((l) => {
+    l.color.set(lightSettings.color);
+    l.intensity = lightSettings.intensity;
+    l.angle = lightSettings.angle;
+    l.penumbra = lightSettings.penumbra;
+    l.distance = lightSettings.distance;
+    l.map = lightSettings.gobo === "radial" ? radialTex :
+            lightSettings.gobo === "gradiente" ? gradientTex : null;
+    l.marker.visible = lightSettings.gizmos;
+    l.marker.material.color.set(lightSettings.color);
+  });
+}
+buildLights();
+
+/* ------------------------------------------------------------------ */
+/* 7. GUI (se omite con ?gui=0 para capturas limpias)                  */
+/* ------------------------------------------------------------------ */
+const SHOW_GUI = new URLSearchParams(location.search).get("gui") !== "0";
+const noop = {};
+for (const k of ["add", "addFolder", "addColor", "open", "close", "onChange", "name", "listen", "destroy"]) noop[k] = () => noop;
+noop.domElement = null;
+const gui = SHOW_GUI ? new GUI({ title: "Vidrio iridiscente" }) : noop;
+
+const matFolder = gui.addFolder("Material");
+matFolder.add(mat, "transmission", 0, 1);
+matFolder.add(mat, "thickness", 0, 5);
+matFolder.add(mat, "ior", 1, 3);
+matFolder.add(mat, "roughness", 0, 1);
+matFolder.add(mat, "metalness", 0, 1);
+matFolder.add(mat, "specularIntensity", 0, 2);
+matFolder.add(mat, "clearcoat", 0, 1);
+matFolder.add(mat, "clearcoatRoughness", 0, 1);
+matFolder.add(mat, "envMapIntensity", 0, 4);
+matFolder.add(renderer, "toneMappingExposure", 0, 3).name("Exposure");
+matFolder.open();
+
+const iridFolder = gui.addFolder("Iridiscencia");
+iridFolder.add(mat, "iridescence", 0, 1);
+iridFolder.add(mat, "iridescenceIOR", 1, 3).name("Irid IOR");
+iridFolder.add(matConfig, "iridMin", 0, 800, 1).name("Grosor min (nm)").onChange(setIridRange);
+iridFolder.add(matConfig, "iridMax", 100, 2000, 1).name("Grosor max (nm)").onChange(setIridRange);
+iridFolder.add(matConfig, "thicknessMap", ["ninguna", "radial", "gradiente", "anillos"])
+  .name("Mapa de grosor").onChange(applyThicknessMap);
+iridFolder.add(matConfig, "bumpScale", 0, 1).name("Bump (relieve)").onChange((v) => { mat.bumpScale = v; mat.needsUpdate = true; });
+iridFolder.add(iridBoost, "enabled").name("Rim iridiscente").onChange(applyIridBoost);
+iridFolder.add(iridBoost, "intensity", 0, 2).name("Rim intensidad").onChange(applyIridBoost);
+iridFolder.open();
+
+const texFolder = gui.addFolder("Texturas");
+const radFolder = texFolder.addFolder("Radial");
+radFolder.add(texSettings.radial, "inner", 0, 300).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+radFolder.add(texSettings.radial, "outer", 50, 400).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+radFolder.addColor(texSettings.radial, "cCenter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+radFolder.addColor(texSettings.radial, "cMid").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+radFolder.addColor(texSettings.radial, "cOuter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+const grayFolder = texFolder.addFolder("Anillos (grosor)");
+grayFolder.add(texSettings.gray, "band", 2, 20, 1).onChange(() => { paintGrayBands(grayCanvas, texSettings.gray); grayTex.needsUpdate = true; });
+texFolder.close();
+
+const lightFolder = gui.addFolder("Luces");
+lightFolder.add(lightSettings, "count", 1, 12, 1).name("Cantidad").onChange(buildLights);
+lightFolder.add(lightSettings, "radius", 1, 10).name("Radio").onChange(placeLights);
+lightFolder.add(lightSettings, "height", 0, 8).name("Altura").onChange(placeLights);
+lightFolder.addColor(lightSettings, "color").onChange(applyLightProps);
+lightFolder.add(lightSettings, "intensity", 0, 40).onChange(applyLightProps);
+lightFolder.add(lightSettings, "angle", 0.1, Math.PI / 2.4).onChange(applyLightProps);
+lightFolder.add(lightSettings, "penumbra", 0, 1).onChange(applyLightProps);
+lightFolder.add(lightSettings, "gobo", ["ninguna", "radial", "gradiente"]).onChange(applyLightProps);
+lightFolder.add(lightSettings, "rotationSpeed", 0, 3).name("Rotación (rad/s)");
+lightFolder.add(lightSettings, "gizmos").name("Gizmos").onChange(applyLightProps);
+lightFolder.open();
+
+const sceneFolder = gui.addFolder("Escena");
+sceneFolder.add(envConfig, "mode", ["hdr", "estudio_color", "gradiente", "estudio"]).name("Entorno").onChange(applyEnv);
+sceneFolder.addColor(BG, "color").onChange((v) => scene.background.set(v));
+sceneFolder.add(objAnim, "speed", 0, 2).name("Giro objeto (rad/s)");
+sceneFolder.add(controls, "autoRotate").name("AutoRotate cámara");
+sceneFolder.add(controls, "autoRotateSpeed", 0, 5).name("Vel. autoRotate");
+sceneFolder.open();
+
+/* ------------------------------------------------------------------ */
+/* 8. Overrides por URL + handle de depuración (para iterar rápido)    */
+/* ------------------------------------------------------------------ */
+const Q = new URLSearchParams(location.search);
+const qnum = (k, d) => { const v = Q.get(k); return v === null || v === "" ? d : parseFloat(v); };
+const qstr = (k, d) => { const v = Q.get(k); return v === null ? d : v; };
+
+if (Q.get("transmission") !== null) mat.transmission = qnum("transmission");
+if (Q.get("roughness") !== null) mat.roughness = qnum("roughness");
+if (Q.get("metalness") !== null) mat.metalness = qnum("metalness");
+if (Q.get("ior") !== null) mat.ior = qnum("ior");
+if (Q.get("thickness") !== null) mat.thickness = qnum("thickness");
+if (Q.get("irid") !== null) mat.iridescence = qnum("irid");
+if (Q.get("iridIOR") !== null) mat.iridescenceIOR = qnum("iridIOR");
+if (Q.get("iridMin") !== null) { matConfig.iridMin = qnum("iridMin"); setIridRange(); }
+if (Q.get("iridMax") !== null) { matConfig.iridMax = qnum("iridMax"); setIridRange(); }
+if (Q.get("envIntensity") !== null) mat.envMapIntensity = qnum("envIntensity");
+if (Q.get("clearcoat") !== null) mat.clearcoat = qnum("clearcoat");
+if (Q.get("bump") !== null) { mat.bumpScale = qnum("bump"); mat.needsUpdate = true; }
+if (Q.get("boost") !== null) { iridBoost.enabled = qnum("boost") > 0; iridBoost.intensity = qnum("boost"); applyIridBoost(); }
+if (Q.get("tm") !== null) renderer.toneMapping = qnum("tm");
+if (Q.get("exp") !== null) renderer.toneMappingExposure = qnum("exp");
+if (Q.get("env") !== null) { envConfig.mode = qstr("env"); applyEnv(); }
+if (Q.get("thicknessMap") !== null) { matConfig.thicknessMap = qstr("thicknessMap"); applyThicknessMap(); }
+if (Q.get("bg") !== null) scene.background = new THREE.Color(qstr("bg"));
+if (Q.get("count") !== null) { lightSettings.count = Math.round(qnum("count")); buildLights(); }
+if (Q.get("intensity") !== null) { lightSettings.intensity = qnum("intensity"); applyLightProps(); }
+if (Q.get("height") !== null) { lightSettings.height = qnum("height"); placeLights(); }
+if (Q.get("radius") !== null) { lightSettings.radius = qnum("radius"); placeLights(); }
+if (Q.get("speed") !== null) objAnim.speed = qnum("speed");
+
+window.__dbg = { scene, mat, renderer, camera, controls, lights, lightGroup, gradientEnv, roomEnv, studioEnv, gradCanvas: _grad.canvas, envConfig, pmrem, model: null };
+Object.defineProperty(window.__dbg, "model", { get: () => model });
+
+/* ------------------------------------------------------------------ */
+/* 9. Loop                                                             */
+/* ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (model) model.rotation.y += objAnim.speed * dt;
+  lightGroup.rotation.y += lightSettings.rotationSpeed * dt;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
