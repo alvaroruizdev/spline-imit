@@ -313,7 +313,7 @@ setInterval(refreshViewer, 500);   // se actualiza al editar texturas en la GUI
 /* === VIEWER-JS-END === */
 const matConfig = {
   thicknessMap: "ninguna",
-  bumpScale: 0.35,
+  bumpScale: 0,
   iridMin: 100,
   iridMax: 400
 };
@@ -459,7 +459,7 @@ const lightSettings = {
   penumbra: 0.6,
   distance: 20,
   rotationSpeed: 0.5,   // rad/s
-  gizmos: true,
+  gizmos: false,
   gobo: "ninguna"       // "ninguna" | "radial" | "gradiente"
 };
 
@@ -563,13 +563,13 @@ iridFolder.open();
 
 const texFolder = gui.addFolder("Texturas");
 const radFolder = texFolder.addFolder("Radial");
-radFolder.add(texSettings.radial, "inner", 0, 300).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
-radFolder.add(texSettings.radial, "outer", 50, 400).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
-radFolder.addColor(texSettings.radial, "cCenter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
-radFolder.addColor(texSettings.radial, "cMid").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
-radFolder.addColor(texSettings.radial, "cOuter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; });
+radFolder.add(texSettings.radial, "inner", 0, 300).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; mat.needsUpdate = true;});
+radFolder.add(texSettings.radial, "outer", 50, 400).onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; mat.needsUpdate = true;});
+radFolder.addColor(texSettings.radial, "cCenter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; mat.needsUpdate = true;});
+radFolder.addColor(texSettings.radial, "cMid").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; mat.needsUpdate = true;});
+radFolder.addColor(texSettings.radial, "cOuter").onChange(() => { paintRadial(radialCanvas, texSettings.radial); radialTex.needsUpdate = true; mat.needsUpdate = true;});
 const grayFolder = texFolder.addFolder("Anillos (grosor)");
-grayFolder.add(texSettings.gray, "band", 2, 20, 1).onChange(() => { paintGrayBands(grayCanvas, texSettings.gray); grayTex.needsUpdate = true; });
+grayFolder.add(texSettings.gray, "band", 2, 20, 1).onChange(() => { paintGrayBands(grayCanvas, texSettings.gray); grayTex.needsUpdate = true; mat.needsUpdate = true;});
 texFolder.close();
 
 const lightFolder = gui.addFolder("Luces");
