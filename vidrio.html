@@ -357,33 +357,66 @@ function setIridRange() {
 
 // Refuerzo iridiscente tipo fresnel (imita las capas "fresnel" de Spline):
 // tiñe los bordes (ángulo rasante) con un arcoíris suave según la vista.
-const iridBoost = { enabled: true, intensity: 1.0 };
+const iridBoost = { 
+  enabled: true, 
+  intensity: 1.0,
+  hueOffset: 0.55,  // Color base inicial
+  hueSpeed: 1.2,    // Rango o velocidad de cambio del arco iris
+  saturation: 0.85,  // Intensidad de los colores
+  warpFreq: 6.28318, // Frecuencia de la onda
+  warpStrength: 0.25 // Fuerza de la deformación
+
+};
+
 mat.onBeforeCompile = (shader) => {
   mat.userData.shader = shader;
+
+  // 1. Definir los uniforms que pasamos desde JavaScript
   shader.uniforms.uIridBoost = { value: iridBoost.enabled ? iridBoost.intensity : 0.0 };
+  shader.uniforms.uHueOffset = { value: iridBoost.hueOffset };
+  shader.uniforms.uHueSpeed = { value: iridBoost.hueSpeed };
+  shader.uniforms.uSaturation = { value: iridBoost.saturation };
+  shader.uniforms.uWarpFreq = { value: iridBoost.warpFreq };
+  shader.uniforms.uWarpStrength = { value: iridBoost.warpStrength };
+
   shader.fragmentShader = shader.fragmentShader
     .replace(
       "#include <common>",
       `#include <common>
-uniform float uIridBoost;
-vec3 hsv2rgb( vec3 c ) {
-  vec4 K = vec4( 1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0 );
-  vec3 p = abs( fract( c.xxx + K.xyz ) * 6.0 - K.www );
-  return c.z * mix( K.xxx, clamp( p - K.xxx, 0.0, 1.0 ), c.y );
-}`
+      uniform float uIridBoost;
+      uniform float uHueOffset;
+      uniform float uHueSpeed;
+      uniform float uSaturation;
+      uniform float uWarpFreq;
+      uniform float uWarpStrength;
+
+      vec3 hsv2rgb( vec3 c ) {
+        vec4 K = vec4( 1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0 );
+        vec3 p = abs( fract( c.xxx + K.xyz ) * 6.0 - K.www );
+        return c.z * mix( K.xxx, clamp( p - K.xxx, 0.0, 1.0 ), c.y );
+      }`
     )
     .replace(
       "#include <opaque_fragment>",
       `
-      // Bandas iridiscentes tipo fresnel saturadas (imita las capas fresnel de
-      // Spline). Se MEZCLA el color sobre el blanco para que no se lave, con
-      // variación orgánica para que no sean círculos perfectos.
       {
         vec3 viewDir = normalize( vViewPosition );
         float fres = 1.0 - abs( dot( normal, viewDir ) );
         float swirl = 0.5 + 0.5 * sin( 3.0 * normal.x + 3.0 * normal.y + 2.0 * normal.z );
         float t = fres * 1.1 + swirl * 0.85;
-        vec3 iridCol = hsv2rgb( vec3( fract( 0.55 + t * 1.2 ), 0.85, 1.0 ) );
+        
+        // Usamos los uniforms aquí
+
+        // GRADIENTE ESTANDAR
+        // vec3 iridCol = hsv2rgb( vec3( fract( uHueOffset + t * uHueSpeed ), uSaturation, 1.0 ) );
+        // GRADIENTE ESQUIVANDO AL VERDE
+        float p = fract( uHueOffset + t * uHueSpeed );
+                                    // 2*PI         // 0.25
+        float warpedP = p + sin( p * uWarpFreq ) * uWarpStrength;
+        float hue = fract( warpedP );
+        vec3 iridCol = hsv2rgb( vec3( hue, uSaturation, 1.0 ) );
+        // --------------------------------------------------------
+
         float band = smoothstep( 0.05, 0.8, fres );
         float amt = clamp( ( 0.12 + 1.1 * band ) * uIridBoost, 0.0, 0.95 );
         outgoingLight = mix( outgoingLight, iridCol, amt );
@@ -557,9 +590,42 @@ iridFolder.add(matConfig, "iridMax", 100, 2000, 1).name("Grosor max (nm)").onCha
 iridFolder.add(matConfig, "thicknessMap", ["ninguna", "radial", "gradiente", "anillos"])
   .name("Mapa de grosor").onChange(applyThicknessMap);
 iridFolder.add(matConfig, "bumpScale", 0, 1).name("Bump (relieve)").onChange((v) => { mat.bumpScale = v; mat.needsUpdate = true; });
-iridFolder.add(iridBoost, "enabled").name("Rim iridiscente").onChange(applyIridBoost);
-iridFolder.add(iridBoost, "intensity", 0, 2).name("Rim intensidad").onChange(applyIridBoost);
-iridFolder.open();
+// iridFolder.open();
+
+const fresnelFolder = gui.addFolder("Efecto fresnel");
+
+fresnelFolder.add(iridBoost, "enabled").name("Usar Fresnel shader").onChange(applyIridBoost);
+fresnelFolder.add(iridBoost, "intensity", 0, 2).name("Fresnel Intensity").onChange(applyIridBoost);
+
+// Actualizar Uniforms
+fresnelFolder.add(iridBoost, 'hueOffset', 0, 1).name('Hue Offset').onChange(v => {
+  if (mat.userData.shader) {
+    mat.userData.shader.uniforms.uHueOffset.value = v;
+  }
+});
+fresnelFolder.add(iridBoost, 'hueSpeed', 0, 1).name('Hue Gradient Speed').onChange(v => {
+  if (mat.userData.shader) {
+    mat.userData.shader.uniforms.uHueSpeed.value = v;
+  }
+});
+fresnelFolder.add(iridBoost, 'saturation', 0, 1).name('Fresnel Saturation').onChange(v => {
+  if (mat.userData.shader) {
+    mat.userData.shader.uniforms.uSaturation.value = v;
+  }
+});
+fresnelFolder.add(iridBoost, 'warpFreq', 1.0, 10.0, 0.1).name('Warp Freq').onChange(v => {
+  if (mat.userData.shader) {
+    mat.userData.shader.uniforms.uWarpFreq.value = v;
+  }
+});
+
+fresnelFolder.add(iridBoost, 'warpStrength', 0.0, 0.5, 0.05).name('Warp Strengh').onChange(v => {
+  if (mat.userData.shader) {
+    mat.userData.shader.uniforms.uWarpStrength.value = v;
+  }
+});
+
+fresnelFolder.open();
 
 const texFolder = gui.addFolder("Texturas");
 const radFolder = texFolder.addFolder("Radial");
