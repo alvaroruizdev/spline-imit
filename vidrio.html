@@ -703,7 +703,21 @@ async function exportCleanHTML() {
     alert("No se pudo exportar: " + e.message + " (sirve la carpeta con serve.py)");
   }
 }
-gui.add({ exportar: exportCleanHTML }, "exportar").name("⬇ Exportar HTML limpio");
+// gui.add({ exportar: exportCleanHTML }, "exportar").name("⬇ Exportar HTML limpio");
+
+
+async function exportFresnelConfig() {
+  const jsonTexto = JSON.stringify(iridBoost, null, 2);
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([jsonTexto], { type: 'application/json' }));
+  a.download = 'configuracion.json';
+  a.click();
+}
+gui.add({ exportar: exportFresnelConfig }, "exportar").name("⬇ Exportar Config Fresnel");
+
+
+
 /* === GUI-JS-END === */
 
 /* ------------------------------------------------------------------ */
