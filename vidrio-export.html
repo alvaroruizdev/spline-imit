@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vidrio — fresnel</title>
+
+</head>
+<body>
+    <style>
+
+        body {
+            background-color: black;
+        }
+.drag-elemento {
+    width: 80vw;
+    height: 80vh;
+    background: none;
+    color: white;
+    
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: bold;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    /* Importante: parte de una traslación cero */
+    transform: translate(0px, 0px);
+    
+    
+    display: none; /* OCULTOS POR DEFECTO */
+}
+.drag-elemento.loaded {
+    display: flex;
+}
+
+/* Contenedor para organizarlos inicialmente de forma limpia */
+.contenedor-grid {
+    display: flex;
+
+    gap: 20px;
+    padding: 40px;
+    margin-bottom: -200px;
+}
+</style>
+
+<div class="contenedor-grid">
+    
+    <!-- ACTIVAR ELEMENTOS DRAG N DROP -->
+    
+    <div id="drag-a" class="drag-elemento"></div>
+    <div id="drag-b" class="drag-elemento"></div>
+    <div id="drag-c" class="drag-elemento"></div>
+    
+    
+    <div id="drag-d" class="drag-elemento">d</div>
+</div>
+
+<script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.min.js",
+        "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+      }
+    }
+</script>
+
+<!-- VIDRIO CACAHUETE -->
+
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+//import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+
+const RUTA_BASE = './';
+// const RUTA_BASE = 'https://digitalmomentum.es/wp-content/themes/digitalmomentum/3d/';
+const ARCHIVO_MODELO = RUTA_BASE + 'cacahuete.glb';
+// const ARCHIVO_MODELO = RUTA_BASE + 'mojon.glb';
+
+/* --- Configuración de Deformación --- */
+const STRENGTH = 1;
+const RADIUS = 0.5;
+const SIGNO = -1;
+const V_LERP = 0.01;
+const LERP_FACTOR = 0.05;
+
+const OBJECT_SPEED = 0.3;   // rad/s
+
+let targetDeformationStrength = 0;
+let currentDeformationStrength = 0;
+let currentHitPoint = new THREE.Vector3();
+let targetHitPoint = new THREE.Vector3();
+
+/* ------------------------------------------------------------------ */
+/* Contenedor, canvas, renderer, escena y cámara                    */
+/* ------------------------------------------------------------------ */
+const contenedor = document.querySelector("#drag-d");
+
+contenedor.classList.add('loaded');
+contenedor.style.display = "flex";
+const canvas = document.createElement('canvas');
+canvas.style.cssText = "width: 100% !important; height: 100% !important; display: block;";
+contenedor.appendChild(canvas);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+
+const scene = new THREE.Scene();
+// scene.background = new THREE.Color("#ececec");
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+camera.position.set(0, 0.2, 6.5);
+
+//const controls = new OrbitControls(camera, renderer.domElement);
+//controls.enableDamping = true;
+//controls.target.set(0, 0.2, 0);
+
+function resize() {
+  const w = contenedor.clientWidth, h = contenedor.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+resize();
+window.addEventListener("resize", resize);
+
+// Entorno de estudio con softboxes: da la base blanca y los reflejos del
+// vidrio. No aporta color; el color lo pone únicamente el shader fresnel.
+function buildStudioEnv() {
+  const s = new THREE.Scene();
+  // s.background = new THREE.Color(0x565c64);
+  const disc = (color, intensity, r, x, y, z) => {
+    const m = new THREE.Mesh(
+      new THREE.CircleGeometry(r, 64),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color).multiplyScalar(intensity),
+        side: THREE.DoubleSide
+      })
+    );
+    m.position.set(x, y, z);
+    m.lookAt(0, 0, 0);
+    s.add(m);
+  };
+  disc(0xffffff, 26, 2.8, 0, 4, 13);    // softbox frontal-superior
+  disc(0xffffff, 14, 3.0, -8, 2, 6);
+  disc(0xffffff, 12, 2.6, 9, 1, 4);
+  disc(0xffffff, 12, 2.6, 0, 8, -2);
+  disc(0xffffff, 16, 2.0, -6, -4, -7);  // relleno trasero
+  disc(0xffffff, 16, 2.0, 6, -4, -7);   // relleno trasero
+  disc(0xffffff, 300, 0.55, -3, 5, 9);  // glints pequeños
+  disc(0xffffff, 240, 0.5, 5, 3, 8);
+  disc(0xffffff, 200, 0.45, -1, -5, 9);
+  return s;
+}
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(buildStudioEnv(), 0.0).texture;
+
+/* ------------------------------------------------------------------ */
+/* 2. Material: mismas propiedades que vidrio.html, sin iridiscencia   */
+/* ------------------------------------------------------------------ */
+const mat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  transmission: 0.3,
+  thickness: 1.5,
+  attenuationColor: 0xffffff,
+  attenuationDistance: Infinity,
+  ior: 1.5,
+  roughness: 1,
+  metalness: 0.0,
+  specularIntensity: 1.0,
+  specularColor: 0xffffff,
+  clearcoat: 0.85,
+  clearcoatRoughness: 1,
+  envMapIntensity: 1.3
+});
+
+mat.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = { value: 0 };
+  
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      "#include <common>",
+      `#include <common>
+
+      /* --- Configuración del fresnel (constantes, sin uniforms) --- */
+      #define F_INTENSITY      1.0
+      #define F_HUE_OFFSET     0.55
+      #define F_HUE_SPEED      1.2
+      #define F_SATURATION     0.85
+      #define F_WARP_FREQ      2.0
+      #define F_WARP_STRENGTH  0.25
+
+      uniform float uTime;
+      #define F_TimeSpeed      0.2
+
+      vec3 hsv2rgb( vec3 c ) {
+        vec4 K = vec4( 1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0 );
+        vec3 p = abs( fract( c.xxx + K.xyz ) * 6.0 - K.www );
+        return c.z * mix( K.xxx, clamp( p - K.xxx, 0.0, 1.0 ), c.y );
+      }`
+    )
+    .replace(
+      "#include <opaque_fragment>",
+      `
+      {
+        vec3 viewDir = normalize( vViewPosition );
+        float fres = 1.0 - abs( dot( normal, viewDir ) );
+
+        // Ondulación fija sobre la normal: da variación orgánica al color.
+        float swirl = 0.5 + 0.5 * sin(
+          3.0 * normal.x + 3.0 * normal.y + 2.0 * normal.z
+        );
+        float t = fres * 1.1 + swirl * 0.85;
+
+        // Gradiente de tono + deformación (desvía el verde).
+        float p = fract( F_HUE_OFFSET + (t + uTime * F_TimeSpeed) * F_HUE_SPEED );
+        float warpedP = p + sin( p * 3.1415927 * F_WARP_FREQ ) * F_WARP_STRENGTH;
+        vec3 fresnelColor = hsv2rgb( vec3( fract( warpedP ), F_SATURATION, 1.0 ) );
+
+        // Los bordes (ángulo rasante) reciben más color.
+        float band = smoothstep( 0.05, 0.8, fres );
+        float amt = clamp( ( 0.12 + 1.1 * band ) * F_INTENSITY, 0.0, 0.95 );
+
+        outgoingLight = mix( outgoingLight, fresnelColor, amt );
+      }
+      #include <opaque_fragment>`
+    );
+};
+
+/* ------------------------------------------------------------------ */
+/* 3. Modelo                                                          */
+/* ------------------------------------------------------------------ */
+const loader = new GLTFLoader();
+let model;
+
+const raycastProxies = [];   // <-- nuevo
+
+loader.load(ARCHIVO_MODELO, (gltf) => {
+  model = gltf.scene;
+
+  const box = new THREE.Box3().setFromObject(model);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  model.position.sub(center);
+
+  // Escalar para que la altura ocupe ~4.2 unidades (mismo encuadre).
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const s = 4.2 / Math.max(size.y, 0.0001);
+  model.scale.setScalar(s);
+
+  model.traverse((o) => {
+
+    if (o.isMesh) {
+      
+      o.material = mat;
+      
+      // Configure initial geometry
+      const posAttr = o.geometry.attributes.position;
+      const normAttr0 = o.geometry.attributes.normal;
+
+      const initialPositions = [];
+      const initialNormals = [];
+
+      for (let i = 0; i < posAttr.count; i++) {
+        initialPositions.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)));
+        initialNormals.push(new THREE.Vector3(normAttr0.getX(i), normAttr0.getY(i), normAttr0.getZ(i)));
+
+      }
+      o.geometry.userData.initialPositions = initialPositions;
+      o.geometry.userData.initialNormals = initialNormals;
+
+      // --- Proxy invisible para raycasting: geometria ORIGINAL, nunca deformada ---
+      const proxyGeom = o.geometry.clone();           // clon independiente, no se toca jamas
+      const proxyMesh = new THREE.Mesh(proxyGeom, new THREE.MeshBasicMaterial());
+      proxyMesh.visible = false;                      // no se renderiza
+      proxyMesh.position.copy(o.position);
+      proxyMesh.quaternion.copy(o.quaternion);
+      proxyMesh.scale.copy(o.scale);
+      o.parent.add(proxyMesh);                        // mismo padre que "o" -> mismo transform (misma rotacion del model, etc)
+      raycastProxies.push(proxyMesh);
+
+    }
+  });
+
+  scene.add(model);
+}, undefined, (e) => console.error("GLB:", e));
+
+/* ------------------------------------------------------------------ */
+/* --- BLOQUE: Raycasting e interacción por Click / Tap ------------- */
+/* ------------------------------------------------------------------ */
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function triggerDeformation(event) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / canvas.clientWidth) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / canvas.clientHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  if (!model) return;
+
+  const intersects = raycaster.intersectObjects(raycastProxies, true);
+  if (intersects.length > 0) {
+    const hit = intersects[0];
+    const hitMesh = hit.object;
+    // Convertir el punto de impacto mundial a espacio local del mesh
+    const localPoint = hitMesh.worldToLocal(hit.point.clone());
+    
+    targetHitPoint.copy(localPoint);
+    if (V_LERP === 0) currentHitPoint.copy(localPoint);
+    targetDeformationStrength = STRENGTH;
+  } else {
+    targetDeformationStrength = 0;
+  }
+}
+
+// canvas.addEventListener('pointerdown', triggerDeformation);
+canvas.addEventListener('pointermove', triggerDeformation);
+
+// canvas.addEventListener('pointerup', () => { targetDeformationStrength = 0; });
+canvas.addEventListener('mouseleave', () => { targetDeformationStrength = 0; });
+
+/* ------------------------------------------------------------------ */
+/* Una sola luz                                                    */
+/* ------------------------------------------------------------------ */
+const light = new THREE.SpotLight(0xffffff, 30, 20, Math.PI / 6, 0.6, 1);
+light.position.set(4, 3.2, 4);
+light.target.position.set(0, 0.2, 0);
+scene.add(light, light.target);
+
+/* ------------------------------------------------------------------ */
+/* Loop                                                            */
+/* ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (model) model.rotation.y += OBJECT_SPEED * dt;
+
+  // Update time uniform
+  const elapsedTime = clock.getElapsedTime();
+  
+  const iridShader = mat.userData.shader;
+  if (iridShader) {
+    iridShader.uniforms.uTime.value = elapsedTime;
+  }
+
+  animateGeometry();
+  //controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+function animateGeometry() {
+  /* --- BLOQUE: Actualizar deformación y recuperación (Lerp) --- */
+  if (V_LERP === 0) {
+    currentDeformationStrength = targetDeformationStrength;
+    currentHitPoint.copy(targetHitPoint);
+  } else {
+    currentDeformationStrength += (targetDeformationStrength - currentDeformationStrength) * V_LERP;
+    currentHitPoint.lerp(targetHitPoint, LERP_FACTOR);
+  }
+
+  if (model) {
+    model.traverse((o) => {
+      if (o.isMesh && o.geometry.userData.initialPositions) {
+        const geom = o.geometry;
+        const posAttr = geom.attributes.position;
+        // const normAttr = geom.attributes.normal;
+        const initNormArr = geom.userData.initialNormals;   // <-- nuevo, en vez de geom.attributes.normal
+
+        const initPosArr = geom.userData.initialPositions;
+
+        // Calcular deformación si está activa o volviendo a la posición inicial
+        // Quitamos condicion  Math.abs(currentDeformationStrength) > 0.0001 || targetDeformationStrength !== 0s
+        if (true) {
+          for (let i = 0; i < posAttr.count; i++) {
+            
+            const initPos = initPosArr[i];
+
+            const dist = initPos.distanceTo(currentHitPoint);
+            
+            if (dist < RADIUS) {
+              const falloff = Math.pow(1 - dist / RADIUS, 2) * currentDeformationStrength;
+
+              // coger normales iniciales.
+              const n = initNormArr[i];
+              const nx = n.x, ny = n.y, nz = n.z;
+
+              // const nx = normAttr ? normAttr.getX(i) : 0;
+              // const ny = normAttr ? normAttr.getY(i) : 0;
+              // const nz = normAttr ? normAttr.getZ(i) : 1;
+
+              posAttr.setXYZ(
+                i,
+                initPos.x + SIGNO * nx * falloff,
+                initPos.y + SIGNO * ny * falloff,
+                initPos.z + SIGNO * nz * falloff
+              );
+            } else {
+              posAttr.setXYZ(i, initPos.x, initPos.y, initPos.z);
+            }
+          }
+          posAttr.needsUpdate = true;
+          geom.computeVertexNormals();
+        }
+      }
+    });
+  }
+}
+</script>
+</body>
+</html>
